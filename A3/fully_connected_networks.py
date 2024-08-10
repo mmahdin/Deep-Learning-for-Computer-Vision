@@ -39,9 +39,12 @@ class Linear(object):
         # You will need to reshape the input into rows.                      #
         ######################################################################
         # Replace "pass" statement with your code
+        # N = x.shape[0]
+        # input_vect = x.view(N, -1)  # shape (N, D)
+        # out = input_vect @ w + b
         N = x.shape[0]
-        input_vect = x.view(N, -1)  # shape (N, D)
-        out = input_vect @ w + b
+        transform = x.reshape((N, -1))
+        out = torch.mm(transform, w) + b
         ######################################################################
         #                        END OF YOUR CODE                            #
         ######################################################################
@@ -74,7 +77,7 @@ class Linear(object):
         D = w.shape[0]
 
         # Reshape x to (N, D)
-        input_vect = x.view(N, -1)
+        input_vect = x.reshape((N, -1))
 
         # Gradient with respect to input x
         dx = dout @ w.T

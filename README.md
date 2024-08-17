@@ -7,5 +7,6 @@ Computer Vision has become ubiquitous in our society, with applications in searc
 -  Justin Johnson (University of Michigan)
 
 ### Links:
-  [Videos](https://leccap.engin.umich.edu/leccap/site/jhygcph151x25gjj1f0)
+  - [Videos](https://leccap.engin.umich.edu/leccap/site/jhygcph151x25gjj1f0)
+  - [Assignments](https://web.eecs.umich.edu/~justincj/teaching/eecs498/FA2020/assignment1.html)
   

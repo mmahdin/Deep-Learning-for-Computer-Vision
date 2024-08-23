@@ -7,69 +7,82 @@ import torch
 import math
 import torch.nn as nn
 from a4_helper import *
-from torch.nn.parameter import Parameter 
+from torch.nn.parameter import Parameter
+
 
 def hello():
-  """
-  This is a sample function that we will try to import and run to ensure that
-  our environment is correctly set up on Google Colab.
-  """
-  print('Hello from rnn_lstm_attention_captioning.py!')
+    """
+    This is a sample function that we will try to import and run to ensure that
+    our environment is correctly set up on Google Colab.
+    """
+    print('Hello from rnn_lstm_attention_captioning.py!')
+
 
 class FeatureExtractor(object):
-  """
-  Image feature extraction with MobileNet.
-  """
-  def __init__(self, pooling=False, verbose=False,
-               device='cpu', dtype=torch.float32):
-
-    from torchvision import transforms, models
-    from torchsummary import summary
-    self.preprocess = transforms.Compose([
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-    self.device, self.dtype = device, dtype
-    self.mobilenet = models.mobilenet_v2(pretrained=True).to(device)
-    self.mobilenet = nn.Sequential(*list(self.mobilenet.children())[:-1]) # Remove the last classifier
-    
-    # average pooling
-    if pooling:
-      self.mobilenet.add_module('LastAvgPool', nn.AvgPool2d(4, 4)) # input: N x 1280 x 4 x 4
-    
-    self.mobilenet.eval()
-    if verbose:
-      summary(self.mobilenet, (3, 112, 112))
-  
-  def extract_mobilenet_feature(self, img, verbose=False):
     """
-    Inputs:
-    - img: Batch of resized images, of shape N x 3 x 112 x 112
-
-    Outputs:
-    - feat: Image feature, of shape N x 1280 (pooled) or N x 1280 x 4 x 4
+    Image feature extraction with MobileNet.
     """
-    num_img = img.shape[0]
-    
-    img_prepro = []
-    for i in range(num_img):
-      img_prepro.append(self.preprocess(img[i].type(self.dtype).div(255.)))
-    img_prepro = torch.stack(img_prepro).to(self.device)
-    
-    with torch.no_grad():
-      feat = []
-      process_batch = 500
-      for b in range(math.ceil(num_img/process_batch)):
-        feat.append(self.mobilenet(img_prepro[b*process_batch:(b+1)*process_batch]
-                                ).squeeze(-1).squeeze(-1)) # forward and squeeze
-      feat = torch.cat(feat)
-      
-      # add l2 normalization
-      F.normalize(feat, p=2, dim=1)
-    
-    if verbose:
-      print('Output feature shape: ', feat.shape)
-    
-    return feat
+
+    def __init__(self, pooling=False, verbose=False,
+                 device='cpu', dtype=torch.float32):
+
+        from torchvision import transforms, models
+        from torchsummary import summary
+        from torchvision.models import MobileNet_V2_Weights
+
+        self.preprocess = transforms.Compose([
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[
+                                 0.229, 0.224, 0.225]),
+        ])
+        self.device, self.dtype = device, dtype
+
+        # Use the recommended 'weights' parameter
+        self.mobilenet = models.mobilenet_v2(
+            weights=MobileNet_V2_Weights.IMAGENET1K_V1).to(device)
+
+        # Remove the last classifier
+        self.mobilenet = nn.Sequential(*list(self.mobilenet.children())[:-1])
+
+        # average pooling
+        if pooling:
+            # input: N x 1280 x 4 x 4
+            self.mobilenet.add_module('LastAvgPool', nn.AvgPool2d(4, 4))
+
+        self.mobilenet.eval()
+        if verbose:
+            summary(self.mobilenet, (3, 112, 112))
+
+    def extract_mobilenet_feature(self, img, verbose=False):
+        """
+        Inputs:
+        - img: Batch of resized images, of shape N x 3 x 112 x 112
+
+        Outputs:
+        - feat: Image feature, of shape N x 1280 (pooled) or N x 1280 x 4 x 4
+        """
+        num_img = img.shape[0]
+
+        img_prepro = []
+        for i in range(num_img):
+            img_prepro.append(self.preprocess(
+                img[i].type(self.dtype).div(255.)))
+        img_prepro = torch.stack(img_prepro).to(self.device)
+
+        with torch.no_grad():
+            feat = []
+            process_batch = 500
+            for b in range(math.ceil(num_img/process_batch)):
+                feat.append(self.mobilenet(img_prepro[b*process_batch:(b+1)*process_batch]
+                                           ).squeeze(-1).squeeze(-1))  # forward and squeeze
+            feat = torch.cat(feat)
+
+            # add l2 normalization
+            F.normalize(feat, p=2, dim=1)
+
+        if verbose:
+            print('Output feature shape: ', feat.shape)
+
+        return feat
 
 
 ##############################################################################
@@ -102,7 +115,8 @@ def rnn_step_forward(x, prev_h, Wx, Wh, b):
     # Hint: You can use torch.tanh()                                             #
     ##############################################################################
     # Replace "pass" statement with your code
-    pass
+    next_h = torch.tanh(x.mm(Wx) + prev_h.mm(Wh) + b)
+    cache = (x, Wx, prev_h, Wh, b, next_h)
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -132,7 +146,13 @@ def rnn_step_backward(dnext_h, cache):
     # of the output value from tanh.                                             #
     ##############################################################################
     # Replace "pass" statement with your code
-    pass
+    x, Wx, prev_h, Wh, b, next_h = cache
+    dout = dnext_h * (1 - next_h ** 2)  # N*H
+    dx = dout.mm(Wx.t())  # N*D
+    dWx = x.t().mm(dout)  # D*H
+    dprev_h = dout.mm(Wh.t())  # N*H
+    dWh = prev_h.t().mm(dout)
+    db = dout.sum(dim=0)
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -164,7 +184,16 @@ def rnn_forward(x, h0, Wx, Wh, b):
     # above. You can use a for loop to help compute the forward pass.            #
     ##############################################################################
     # Replace "pass" statement with your code
-    pass
+    N, T, D = x.shape
+    H = h0.shape[1]
+    h = torch.zeros((N, T, H), dtype=h0.dtype, device=h0.device)
+    prev_h = h0
+    cache = []
+    for i in range(T):
+        next_h, cache_h = rnn_step_forward(x[:, i, :], prev_h, Wx, Wh, b)
+        prev_h = next_h
+        h[:, i, :] = prev_h
+        cache.append(cache_h)
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -177,7 +206,7 @@ def rnn_backward(dh, cache):
 
     Inputs:
     - dh: Upstream gradients of all hidden states, of shape (N, T, H). 
-    
+
     NOTE: 'dh' contains the upstream gradients produced by the 
     individual loss functions at each timestep, *not* the gradients
     being passed between timesteps (which you'll have to compute yourself
@@ -197,7 +226,25 @@ def rnn_backward(dh, cache):
     # defined above. You can use a for loop to help compute the backward pass.   #
     ##############################################################################
     # Replace "pass" statement with your code
-    pass
+    N, T, H = dh.shape
+    # cache = (x, Wx, prev_h, Wh, b, next_h)
+    D = cache[0][0].shape[1]  # shape of dx
+    dx = torch.zeros(
+        (N, T, D), dtype=cache[0][0].dtype, device=cache[0][0].device)
+    dWx = torch.zeros_like(cache[0][1])
+    dprev_h = torch.zeros_like(cache[0][2])
+    dWh = torch.zeros_like(cache[0][3])
+    db = torch.zeros_like(cache[0][4])
+    dh0 = torch.zeros((N, H), dtype=dprev_h.dtype, device=dprev_h.device)
+    dprev_h_ = torch.zeros_like(dh0)
+    for i in range(T-1, -1, -1):
+        dx_, dprev_h_, dWx_, dWh_, db_ = rnn_step_backward(
+            dh[:, i, :]+dprev_h_, cache[i])
+        dx[:, i, :] = dx_
+        dWx += dWx_  # sum up because they share
+        dWh += dWh_
+        db += db_
+    dh0 = dprev_h_
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -209,94 +256,96 @@ def rnn_backward(dh, cache):
 # through the code as you will write modules on your own later.              #
 ##############################################################################
 class RNN(nn.Module):
-  """
-  A single-layer vanilla RNN module.
-  
-  Arguments for initialization:
-  - input_size: Input size, denoted as D before
-  - hidden_size: Hidden size, denoted as H before
-  """
-  def __init__(self, input_size, hidden_size, device='cpu',
-                dtype=torch.float32):
     """
-    Initialize a RNN.
-    Model parameters to initialize:
-    - Wx: Weight matrix for input-to-hidden connections, of shape (D, H)
-    - Wh: Weight matrix for hidden-to-hidden connections, of shape (H, H)
-    - b: Biases, of shape (H,)
-    """
-    super().__init__()
-    
-    # Register parameters
-    self.Wx = Parameter(torch.randn(input_size, hidden_size,
-                       device=device, dtype=dtype).div(math.sqrt(input_size)))
-    self.Wh = Parameter(torch.randn(hidden_size, hidden_size,
-                       device=device, dtype=dtype).div(math.sqrt(hidden_size)))
-    self.b = Parameter(torch.zeros(hidden_size,
-                       device=device, dtype=dtype))
-    
-  def forward(self, x, h0):
-    """
-    Inputs:
-    - x: Input data for the entire timeseries, of shape (N, T, D)
-    - h0: Initial hidden state, of shape (N, H)
+    A single-layer vanilla RNN module.
 
-    Outputs:
-    - hn: The hidden state output
+    Arguments for initialization:
+    - input_size: Input size, denoted as D before
+    - hidden_size: Hidden size, denoted as H before
     """
-    hn, _ = rnn_forward(x, h0, self.Wx, self.Wh, self.b)
-    return hn
-  
-  def step_forward(self, x, prev_h):
-    """
-    Inputs:
-    - x: Input data for one time step, of shape (N, D)
-    - prev_h: The previous hidden state, of shape (N, H)
 
-    Outputs:
-    - next_h: The next hidden state, of shape (N, H)
-    """
-    next_h, _ = rnn_step_forward(x, prev_h, self.Wx, self.Wh, self.b)
-    return next_h
-    
+    def __init__(self, input_size, hidden_size, device='cpu',
+                 dtype=torch.float32):
+        """
+        Initialize a RNN.
+        Model parameters to initialize:
+        - Wx: Weight matrix for input-to-hidden connections, of shape (D, H)
+        - Wh: Weight matrix for hidden-to-hidden connections, of shape (H, H)
+        - b: Biases, of shape (H,)
+        """
+        super().__init__()
+
+        # Register parameters
+        self.Wx = Parameter(torch.randn(input_size, hidden_size,
+                                        device=device, dtype=dtype).div(math.sqrt(input_size)))
+        self.Wh = Parameter(torch.randn(hidden_size, hidden_size,
+                                        device=device, dtype=dtype).div(math.sqrt(hidden_size)))
+        self.b = Parameter(torch.zeros(hidden_size,
+                           device=device, dtype=dtype))
+
+    def forward(self, x, h0):
+        """
+        Inputs:
+        - x: Input data for the entire timeseries, of shape (N, T, D)
+        - h0: Initial hidden state, of shape (N, H)
+
+        Outputs:
+        - hn: The hidden state output
+        """
+        hn, _ = rnn_forward(x, h0, self.Wx, self.Wh, self.b)
+        return hn
+
+    def step_forward(self, x, prev_h):
+        """
+        Inputs:
+        - x: Input data for one time step, of shape (N, D)
+        - prev_h: The previous hidden state, of shape (N, H)
+
+        Outputs:
+        - next_h: The next hidden state, of shape (N, H)
+        """
+        next_h, _ = rnn_step_forward(x, prev_h, self.Wx, self.Wh, self.b)
+        return next_h
+
 
 class WordEmbedding(nn.Module):
-  """
-  Simplified version of torch.nn.Embedding.
+    """
+    Simplified version of torch.nn.Embedding.
 
-  We operate on minibatches of size N where
-  each sequence has length T. We assume a vocabulary of V words, assigning each
-  word to a vector of dimension D.
+    We operate on minibatches of size N where
+    each sequence has length T. We assume a vocabulary of V words, assigning each
+    word to a vector of dimension D.
 
-  Inputs:
-  - x: Integer array of shape (N, T) giving indices of words. Each element idx
-    of x muxt be in the range 0 <= idx < V.
+    Inputs:
+    - x: Integer array of shape (N, T) giving indices of words. Each element idx
+      of x muxt be in the range 0 <= idx < V.
 
-  Returns a tuple of:
-  - out: Array of shape (N, T, D) giving word vectors for all input words.
-  """
-  def __init__(self, vocab_size, embed_size,
-               device='cpu', dtype=torch.float32):
-      super().__init__()
-      
-      # Register parameters
-      self.W_embed = Parameter(torch.randn(vocab_size, embed_size,
-                         device=device, dtype=dtype).div(math.sqrt(vocab_size)))
-      
-  def forward(self, x):
+    Returns a tuple of:
+    - out: Array of shape (N, T, D) giving word vectors for all input words.
+    """
 
-      out = None
-      ##############################################################################
-      # TODO: Implement the forward pass for word embeddings.                      #
-      #                                                                            #
-      # HINT: This can be done in one line using PyTorch's array indexing.           #
-      ##############################################################################
-      # Replace "pass" statement with your code
-      pass
-      ##############################################################################
-      #                               END OF YOUR CODE                             #
-      ##############################################################################
-      return out
+    def __init__(self, vocab_size, embed_size,
+                 device='cpu', dtype=torch.float32):
+        super().__init__()
+
+        # Register parameters
+        self.W_embed = Parameter(torch.randn(vocab_size, embed_size,
+                                             device=device, dtype=dtype).div(math.sqrt(vocab_size)))
+
+    def forward(self, x):
+
+        out = None
+        ##############################################################################
+        # TODO: Implement the forward pass for word embeddings.                      #
+        #                                                                            #
+        # HINT: This can be done in one line using PyTorch's array indexing.           #
+        ##############################################################################
+        # Replace "pass" statement with your code
+        out = self.W_embed[x]
+        ##############################################################################
+        #                               END OF YOUR CODE                             #
+        ##############################################################################
+        return out
 
 
 def temporal_softmax_loss(x, y, ignore_index=None):
@@ -323,7 +372,7 @@ def temporal_softmax_loss(x, y, ignore_index=None):
     - loss: Scalar giving loss
     """
     loss = None
-    
+
     ##############################################################################
     # TODO: Implement the temporal softmax loss function.                        #
     #                                                                            #
@@ -337,11 +386,16 @@ def temporal_softmax_loss(x, y, ignore_index=None):
     # all timesteps and *averaging* across the minibatch.                        #
     ##############################################################################
     # Replace "pass" statement with your code
-    pass
+    N, T, V = x.shape
+    x_flat = x.reshape(N*T, V)
+    y_flat = y.reshape(N*T)
+    loss = F.cross_entropy(
+        x_flat, y_flat, ignore_index=ignore_index, reduction='sum')
+    loss = loss / N
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
-    
+
     return loss
 
 
@@ -355,12 +409,13 @@ class CaptioningRNN(nn.Module):
     of dimension W, and operates on minibatches of size N.
 
     Note that we don't use any regularization for the CaptioningRNN.
-    
+
     You will implement the `__init__` method for model initialization and
     the `forward` method first, then come back for the `sample` method later.
     """
+
     def __init__(self, word_to_idx, input_dim=512, wordvec_dim=128,
-                 hidden_dim=128, cell_type='rnn', device='cpu', 
+                 hidden_dim=128, cell_type='rnn', device='cpu',
                  ignore_index=None, dtype=torch.float32):
         """
         Construct a new CaptioningRNN instance.
@@ -388,8 +443,8 @@ class CaptioningRNN(nn.Module):
         self._null = word_to_idx['<NULL>']
         self._start = word_to_idx.get('<START>', None)
         self._end = word_to_idx.get('<END>', None)
-        self.ignore_index = ignore_index  
-        
+        self.ignore_index = ignore_index
+
         ##########################################################################
         # TODO: Initialize the image captioning module. Refer to the TODO        #
         # in the captioning_forward function on layers you need to create        #
@@ -406,11 +461,41 @@ class CaptioningRNN(nn.Module):
         #       feature and pooling=False to get the CNN activation map.         #
         ##########################################################################
         # Replace "pass" statement with your code
-        pass
+        self.wordvec_dim = wordvec_dim
+        self.feat_extract = None
+        self.affine = None
+        self.rnn = None
+        self.affine = nn.Linear(input_dim, hidden_dim).to(
+            device=device, dtype=dtype)
+        if cell_type == 'rnn' or cell_type == 'lstm':
+            self.feat_extract = FeatureExtractor(
+                pooling=True, device=device, dtype=dtype)
+            # self.affine = nn.Linear(input_dim, hidden_dim).to(device=device, dtype=dtype)
+            if cell_type == 'rnn':
+                self.rnn = RNN(wordvec_dim, hidden_dim,
+                               device=device, dtype=dtype)
+            else:
+                self.rnn = LSTM(wordvec_dim, hidden_dim,
+                                device=device, dtype=dtype)
+        elif cell_type == 'attention':
+            self.feat_extract = FeatureExtractor(
+                pooling=False, device=device, dtype=dtype)
+            self.rnn = AttentionLSTM(
+                wordvec_dim, hidden_dim, device=device, dtype=dtype)
+        else:
+            raise ValueError
+        nn.init.kaiming_normal_(self.affine.weight)
+        nn.init.zeros_(self.affine.bias)
+        self.word_embed = WordEmbedding(
+            vocab_size, wordvec_dim, device=device, dtype=dtype)
+        self.temporal_affine = nn.Linear(
+            hidden_dim, vocab_size).to(device=device, dtype=dtype)
+        nn.init.kaiming_normal_(self.temporal_affine.weight)
+        nn.init.zeros_(self.temporal_affine.bias)
         #############################################################################
         #                              END OF YOUR CODE                             #
         #############################################################################
-    
+
     def forward(self, images, captions):
         """
         Compute training-time loss for the RNN. We input images and
@@ -431,7 +516,7 @@ class CaptioningRNN(nn.Module):
         # by one relative to each other because the RNN should produce word (t+1)
         # after receiving word t. The first element of captions_in will be the START
         # token, and the first element of captions_out will be the first word.
-        captions_in = captions[:, :-1]
+        captions_in = captions[:, :-1]  # N x T
         captions_out = captions[:, 1:]
 
         loss = 0.0
@@ -456,7 +541,22 @@ class CaptioningRNN(nn.Module):
         # Do not worry about regularizing the weights or their gradients!          #
         ############################################################################
         # Replace "pass" statement with your code
-        pass
+        feature = self.feat_extract.extract_mobilenet_feature(
+            images)  # N x 1280
+        if self.cell_type == 'attention':
+            # make it N * 4 * 4 * input_dim
+            feature = feature.permute(0, 2, 3, 1)
+
+        h0 = self.affine(feature)  # N x hidden_dim
+
+        if self.cell_type == 'attention':
+            h0 = h0.permute(0, 3, 1, 2)  # permute back (N, H, 4, 4)
+
+        x = self.word_embed(captions_in)  # N x T x wordvec_dim
+        h = self.rnn(x, h0)  # N x T x H
+        score = self.temporal_affine(h)
+        loss = temporal_softmax_loss(
+            score, captions_out, ignore_index=self._null)
         ############################################################################
         #                             END OF YOUR CODE                             #
         ############################################################################
@@ -491,7 +591,7 @@ class CaptioningRNN(nn.Module):
         captions = self._null * images.new(N, max_length).fill_(1).long()
 
         if self.cell_type == 'attention':
-          attn_weights_all = images.new(N, max_length, 4, 4).fill_(0).float()
+            attn_weights_all = images.new(N, max_length, 4, 4).fill_(0).float()
 
         ###########################################################################
         # TODO: Implement test-time sampling for the model. You will need to      #
@@ -521,14 +621,45 @@ class CaptioningRNN(nn.Module):
         # would both be A.mean(dim=(2, 3)).                                       #
         ###########################################################################
         # Replace "pass" statement with your code
-        pass
+        feature = self.feat_extract.extract_mobilenet_feature(images)
+        A = None
+        if self.cell_type == 'attention':
+            # make it N * 4 * 4 * input_dim
+            feature = feature.permute(0, 2, 3, 1)
+        prev_h = self.affine(feature)
+        prev_c = torch.zeros_like(prev_h)
+        if self.cell_type == 'attention':
+            A = prev_h.permute(0, 3, 1, 2)  # permute back
+            prev_h = A.mean(dim=(2, 3))
+            prev_c = A.mean(dim=(2, 3))
+
+        x = torch.ones((N, self.wordvec_dim), dtype=prev_h.dtype,
+                       device=prev_h.device) * self.word_embed(self._start).reshape(1, -1)
+        for i in range(max_length):
+            next_h = None
+            if self.cell_type == 'rnn':
+                next_h = self.rnn.step_forward(x, prev_h)
+            elif self.cell_type == 'lstm':
+                next_h, prev_c = self.rnn.step_forward(x, prev_h, prev_c)
+            else:
+                attn, attn_weights = dot_product_attention(prev_h, A)
+                attn_weights_all[:, i] = attn_weights
+                next_h, prev_c = self.rnn.step_forward(x, prev_h, prev_c, attn)
+
+            score = self.temporal_affine(next_h)
+            # loss = temporal_softmax_loss(score, captions_out, ignore_index=self._null)
+            max_idx = torch.argmax(score, dim=1)
+            captions[:, i] = max_idx
+            x = self.word_embed(max_idx)
+            # print(x.shape)
+            prev_h = next_h
         ############################################################################
         #                             END OF YOUR CODE                             #
         ############################################################################
         if self.cell_type == 'attention':
-          return captions, attn_weights_all.cpu()
+            return captions, attn_weights_all.cpu()
         else:
-          return captions
+            return captions
 
 
 ##############################################################################
@@ -562,7 +693,18 @@ def lstm_step_forward(x, prev_h, prev_c, Wx, Wh, b, attn=None, Wattn=None):
     # You may want to use torch.sigmoid() for the sigmoid function.             #
     #############################################################################
     # Replace "pass" statement with your code
-    pass
+    N, H = prev_h.shape
+    a = None
+    if attn is None:  # regular lstm
+        a = x.mm(Wx) + prev_h.mm(Wh) + b
+    else:
+        a = x.mm(Wx) + prev_h.mm(Wh) + b + attn.mm(Wattn)
+    i = torch.sigmoid(a[:, 0:H])
+    f = torch.sigmoid(a[:, H:2*H])
+    o = torch.sigmoid(a[:, 2*H:3*H])
+    g = torch.tanh(a[:, 3*H:4*H])
+    next_c = f * prev_c + i * g
+    next_h = o * torch.tanh(next_c)
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -592,71 +734,85 @@ def lstm_forward(x, h0, Wx, Wh, b):
     - h: Hidden states for all timesteps of all sequences, of shape (N, T, H)
     """
     h = None
-    c0 = torch.zeros_like(h0) # we provide the intial cell state c0 here for you!
+    # we provide the intial cell state c0 here for you!
+    c0 = torch.zeros_like(h0)
     #############################################################################
     # TODO: Implement the forward pass for an LSTM over an entire timeseries.   #
     # You should use the lstm_step_forward function that you just defined.       #
     #############################################################################
     # Replace "pass" statement with your code
-    pass
+    N, T, D = x.shape
+    _, H = h0.shape
+    h = torch.zeros((N, T, H), dtype=h0.dtype, device=h0.device)
+    prev_h = h0
+    prev_c = c0
+    for i in range(T):
+        next_h, next_c = lstm_step_forward(
+            x[:, i, :], prev_h, prev_c, Wx, Wh, b)
+        prev_h = next_h
+        prev_c = next_c
+        h[:, i, :] = prev_h
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
 
     return h
 
+
 class LSTM(nn.Module):
-  """
-  This is our single-layer, uni-directional LSTM module.
-  
-  Arguments for initialization:
-  - input_size: Input size, denoted as D before
-  - hidden_size: Hidden size, denoted as H before
-  """
-  def __init__(self, input_size, hidden_size, device='cpu',
-                dtype=torch.float32):
     """
-    Initialize a LSTM.
-    Model parameters to initialize:
-    - Wx: Weights for input-to-hidden connections, of shape (D, 4H)
-    - Wh: Weights for hidden-to-hidden connections, of shape (H, 4H)
-    - b: Biases, of shape (4H,)
-    """
-    super().__init__()
-    
-    # Register parameters
-    self.Wx = Parameter(torch.randn(input_size, hidden_size*4,
-                       device=device, dtype=dtype).div(math.sqrt(input_size)))
-    self.Wh = Parameter(torch.randn(hidden_size, hidden_size*4,
-                       device=device, dtype=dtype).div(math.sqrt(hidden_size)))
-    self.b = Parameter(torch.zeros(hidden_size*4,
-                       device=device, dtype=dtype))
-    
-  def forward(self, x, h0):
-    """
-    Inputs:
-    - x: Input data for the entire timeseries, of shape (N, T, D)
-    - h0: Initial hidden state, of shape (N, H)
+    This is our single-layer, uni-directional LSTM module.
 
-    Outputs:
-    - hn: The hidden state output
+    Arguments for initialization:
+    - input_size: Input size, denoted as D before
+    - hidden_size: Hidden size, denoted as H before
     """
-    hn = lstm_forward(x, h0, self.Wx, self.Wh, self.b)
-    return hn
-  
-  def step_forward(self, x, prev_h, prev_c):
-    """
-    Inputs:
-    - x: Input data for one time step, of shape (N, D)
-    - prev_h: The previous hidden state, of shape (N, H)
-    - prev_c: The previous cell state, of shape (N, H)
 
-    Outputs:
-    - next_h: The next hidden state, of shape (N, H)
-    - next_c: The next cell state, of shape (N, H)
-    """
-    next_h, next_c = lstm_step_forward(x, prev_h, prev_c, self.Wx, self.Wh, self.b)
-    return next_h, next_c
+    def __init__(self, input_size, hidden_size, device='cpu',
+                 dtype=torch.float32):
+        """
+        Initialize a LSTM.
+        Model parameters to initialize:
+        - Wx: Weights for input-to-hidden connections, of shape (D, 4H)
+        - Wh: Weights for hidden-to-hidden connections, of shape (H, 4H)
+        - b: Biases, of shape (4H,)
+        """
+        super().__init__()
+
+        # Register parameters
+        self.Wx = Parameter(torch.randn(input_size, hidden_size*4,
+                                        device=device, dtype=dtype).div(math.sqrt(input_size)))
+        self.Wh = Parameter(torch.randn(hidden_size, hidden_size*4,
+                                        device=device, dtype=dtype).div(math.sqrt(hidden_size)))
+        self.b = Parameter(torch.zeros(hidden_size*4,
+                           device=device, dtype=dtype))
+
+    def forward(self, x, h0):
+        """
+        Inputs:
+        - x: Input data for the entire timeseries, of shape (N, T, D)
+        - h0: Initial hidden state, of shape (N, H)
+
+        Outputs:
+        - hn: The hidden state output
+        """
+        hn = lstm_forward(x, h0, self.Wx, self.Wh, self.b)
+        return hn
+
+    def step_forward(self, x, prev_h, prev_c):
+        """
+        Inputs:
+        - x: Input data for one time step, of shape (N, D)
+        - prev_h: The previous hidden state, of shape (N, H)
+        - prev_c: The previous cell state, of shape (N, H)
+
+        Outputs:
+        - next_h: The next hidden state, of shape (N, H)
+        - next_c: The next cell state, of shape (N, H)
+        """
+        next_h, next_c = lstm_step_forward(
+            x, prev_h, prev_c, self.Wx, self.Wh, self.b)
+        return next_h, next_c
 
 
 ##############################################################################
@@ -670,11 +826,11 @@ def dot_product_attention(prev_h, A):
     - prev_h: The LSTM hidden state from the previous time step, of shape (N, H)
     - A: **Projected** CNN feature activation, of shape (N, H, 4, 4),
          where H is the LSTM hidden state size
-    
+
     Outputs:
     - attn: Attention embedding output, of shape (N, H)
     - attn_weights: Attention weights, of shape (N, 4, 4)
-    
+
     """
     N, H, D_a, _ = A.shape
 
@@ -685,11 +841,18 @@ def dot_product_attention(prev_h, A):
     # HINT: Make sure you reshape attn_weights back to (N, 4, 4)!               #
     #############################################################################
     # Replace "pass" statement with your code
-    pass
+    from math import sqrt
+    h_tilt = prev_h.reshape(N, 1, H)
+    A_tilt = A.reshape(N, H, -1)
+    Matt = (torch.bmm(h_tilt, A_tilt).div(sqrt(H))
+            ).reshape(N, -1, 1)  # N * 16 * 1
+    Matt_tilt = F.softmax(Matt, dim=1)  # probability
+    attn = torch.bmm(A_tilt, Matt_tilt).reshape(N, H)
+    attn_weights = Matt_tilt.reshape(N, 4, 4)
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
-    
+
     return attn, attn_weights
 
 
@@ -699,7 +862,7 @@ def attention_forward(x, A, Wx, Wh, Wattn, b):
     For simplicity, we implement scaled dot-product attention, which means in
     Eq. 4 of the paper (https://arxiv.org/pdf/1502.03044.pdf),
     f_{att}(a_i, h_{t−1}) equals to the scaled dot product of a_i and h_{t-1}.
-    
+
     Forward pass for an LSTM over an entire sequence of data. We assume an input
     sequence composed of T vectors, each of dimension D. The LSTM uses a hidden
     size of H, and we work over a minibatch containing N sequences. After running
@@ -720,13 +883,13 @@ def attention_forward(x, A, Wx, Wh, Wattn, b):
     Returns a tuple of:
     - h: Hidden states for all timesteps of all sequences, of shape (N, T, H)
     """
-    
+
     h = None
-    
+
     # The initial hidden state h0 and cell state c0 are initialized differently in
     # Attention LSTM from the original LSTM and hence we provided them for you.
-    h0 = A.mean(dim=(2, 3)) # Initial hidden state, of shape (N, H)
-    c0 = h0 # Initial cell state, of shape (N, H)
+    h0 = A.mean(dim=(2, 3))  # Initial hidden state, of shape (N, H)
+    c0 = h0  # Initial cell state, of shape (N, H)
 
     #############################################################################
     # TODO: Implement the forward pass for an LSTM over an entire timeseries.   #
@@ -734,7 +897,18 @@ def attention_forward(x, A, Wx, Wh, Wattn, b):
     # function that you just defined.                                           #
     #############################################################################
     # Replace "pass" statement with your code
-    pass
+    N, T, D = x.shape
+    _, H = h0.shape
+    h = torch.zeros((N, T, H), dtype=h0.dtype, device=h0.device)
+    prev_h = h0
+    prev_c = c0
+    for i in range(T):
+        attn, attn_weights = dot_product_attention(prev_h, A)
+        next_h, next_c = lstm_step_forward(
+            x[:, i, :], prev_h, prev_c, Wx, Wh, b, attn=attn, Wattn=Wattn)
+        prev_h = next_h
+        prev_c = next_c
+        h[:, i, :] = prev_h
     ##############################################################################
     #                               END OF YOUR CODE                             #
     ##############################################################################
@@ -743,60 +917,60 @@ def attention_forward(x, A, Wx, Wh, Wattn, b):
 
 
 class AttentionLSTM(nn.Module):
-  """
-  This is our single-layer, uni-directional Attention module.
-  
-  Arguments for initialization:
-  - input_size: Input size, denoted as D before
-  - hidden_size: Hidden size, denoted as H before
-  """
-  def __init__(self, input_size, hidden_size, device='cpu',
-                dtype=torch.float32):
     """
-    Initialize a LSTM.
-    Model parameters to initialize:
-    - Wx: Weights for input-to-hidden connections, of shape (D, 4H)
-    - Wh: Weights for hidden-to-hidden connections, of shape (H, 4H)
-    - Wattn: Weights for attention-to-hidden connections, of shape (H, 4H)
-    - b: Biases, of shape (4H,)
-    """
-    super().__init__()
-    
-    # Register parameters
-    self.Wx = Parameter(torch.randn(input_size, hidden_size*4,
-                       device=device, dtype=dtype).div(math.sqrt(input_size)))
-    self.Wh = Parameter(torch.randn(hidden_size, hidden_size*4,
-                       device=device, dtype=dtype).div(math.sqrt(hidden_size)))
-    self.Wattn = Parameter(torch.randn(hidden_size, hidden_size*4,
-                       device=device, dtype=dtype).div(math.sqrt(hidden_size)))
-    self.b = Parameter(torch.zeros(hidden_size*4,
-                       device=device, dtype=dtype))
-    
-  def forward(self, x, A):
-    """  
-    Inputs:
-    - x: Input data for the entire timeseries, of shape (N, T, D)
-    - A: The projected CNN feature activation, of shape (N, H, 4, 4)
+    This is our single-layer, uni-directional Attention module.
 
-    Outputs:
-    - hn: The hidden state output
+    Arguments for initialization:
+    - input_size: Input size, denoted as D before
+    - hidden_size: Hidden size, denoted as H before
     """
-    hn = attention_forward(x, A, self.Wx, self.Wh, self.Wattn, self.b)
-    return hn
-  
-  def step_forward(self, x, prev_h, prev_c, attn):
-    """
-    Inputs:
-    - x: Input data for one time step, of shape (N, D)
-    - prev_h: The previous hidden state, of shape (N, H)
-    - prev_c: The previous cell state, of shape (N, H)
-    - attn: The attention embedding, of shape (N, H)
 
-    Outputs:
-    - next_h: The next hidden state, of shape (N, H)
-    - next_c: The next cell state, of shape (N, H)
-    """
-    next_h, next_c = lstm_step_forward(x, prev_h, prev_c, self.Wx, self.Wh,
-                                       self.b, attn=attn, Wattn=self.Wattn)
-    return next_h, next_c
+    def __init__(self, input_size, hidden_size, device='cpu',
+                 dtype=torch.float32):
+        """
+        Initialize a LSTM.
+        Model parameters to initialize:
+        - Wx: Weights for input-to-hidden connections, of shape (D, 4H)
+        - Wh: Weights for hidden-to-hidden connections, of shape (H, 4H)
+        - Wattn: Weights for attention-to-hidden connections, of shape (H, 4H)
+        - b: Biases, of shape (4H,)
+        """
+        super().__init__()
 
+        # Register parameters
+        self.Wx = Parameter(torch.randn(input_size, hidden_size*4,
+                                        device=device, dtype=dtype).div(math.sqrt(input_size)))
+        self.Wh = Parameter(torch.randn(hidden_size, hidden_size*4,
+                                        device=device, dtype=dtype).div(math.sqrt(hidden_size)))
+        self.Wattn = Parameter(torch.randn(hidden_size, hidden_size*4,
+                                           device=device, dtype=dtype).div(math.sqrt(hidden_size)))
+        self.b = Parameter(torch.zeros(hidden_size*4,
+                           device=device, dtype=dtype))
+
+    def forward(self, x, A):
+        """  
+        Inputs:
+        - x: Input data for the entire timeseries, of shape (N, T, D)
+        - A: The projected CNN feature activation, of shape (N, H, 4, 4)
+
+        Outputs:
+        - hn: The hidden state output
+        """
+        hn = attention_forward(x, A, self.Wx, self.Wh, self.Wattn, self.b)
+        return hn
+
+    def step_forward(self, x, prev_h, prev_c, attn):
+        """
+        Inputs:
+        - x: Input data for one time step, of shape (N, D)
+        - prev_h: The previous hidden state, of shape (N, H)
+        - prev_c: The previous cell state, of shape (N, H)
+        - attn: The attention embedding, of shape (N, H)
+
+        Outputs:
+        - next_h: The next hidden state, of shape (N, H)
+        - next_c: The next cell state, of shape (N, H)
+        """
+        next_h, next_c = lstm_step_forward(x, prev_h, prev_c, self.Wx, self.Wh,
+                                           self.b, attn=attn, Wattn=self.Wattn)
+        return next_h, next_c
